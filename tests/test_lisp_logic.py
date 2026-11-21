@@ -121,16 +121,10 @@ def test_zf_detect_matches_pipeline():
         assert abs(f[0] - x) < 0.5 and abs(f[1] - y) < 0.5
 
 
-def test_strip_ext_and_out_path():
+def test_strip_ext():
     it = make_interp([])
     strip = it.g[Sym("ZF-STRIP-EXT")]
     assert strip("a.b.dwg") == "a.b" and strip("noext") == "noext"
-    existing = {"C:\\d\\도면_배치1_01.pdf", "C:\\d\\도면_배치1_01_2.pdf"}
-    it.g[Sym("GETVAR")] = lambda n: {"DWGPREFIX": "C:\\d\\", "DWGNAME": "도면.dwg"}[n]
-    it.g[Sym("FINDFILE")] = lambda p: p if p in existing else None
-    out = it.g[Sym("ZF-OUT-PATH")]
-    assert out("배치1", 1) == "C:\\d\\도면_배치1_01_3.pdf"
-    assert out("배치1", 12) == "C:\\d\\도면_배치1_12.pdf"
 
 
 def test_parse_sel():
@@ -146,8 +140,8 @@ def test_parse_sel():
     assert isinstance(ps("1,,2", 5), str)
 
 
-def run_zfp(ents, answers_str, out_path, kwords, existing=()):
-    """c:ZFP 전체 흐름을 가짜 AutoCAD 함수로 실행. 기록(dict) 반환"""
+def run_pdfmerge(ents, answers_str, out_path, kwords, existing=()):
+    """c:PDFMERGE 전체 흐름을 가짜 AutoCAD 함수로 실행. 기록(dict) 반환"""
     eds = [to_ed(e) for e in ents]
     it = make_interp(eds)
     samp_ed = to_ed(sample_of(ents))
@@ -194,7 +188,7 @@ def run_zfp(ents, answers_str, out_path, kwords, existing=()):
     g[Sym("ENTMAKE")] = lambda e: rec.__setitem__("entmake", rec["entmake"] + 1) or e
     g[Sym("ENTDEL")] = lambda e: e
     g[Sym("PRINC")] = lambda *a: rec["princ"].append(a[0] if a else "") or NIL_
-    g[Sym("C:ZFP")]()
+    g[Sym("C:PDFMERGE")]()
     rec["sysv"] = sysv
     rec["files"] = files
     return rec
@@ -205,7 +199,7 @@ NIL_ = None
 
 def test_zfp_all_frames_flow():
     ents, origins = M.build(count=7, seed=2)
-    rec = run_zfp(ents, [""], "C:\\out\\합친 도면.pdf", [None])
+    rec = run_pdfmerge(ents, [""], "C:\\out\\합친 도면.pdf", [None])
     assert len(rec["plots"]) == 7
     # Z 순서대로 출력, 임시 파일은 결과 폴더에
     for (p1, p2, path), (x, y) in zip(rec["plots"], origins):
@@ -225,7 +219,7 @@ def test_zfp_all_frames_flow():
 def test_zfp_selection_and_overwrite():
     ents, origins = M.build(count=7, seed=2)
     out = "C:\\out\\a.pdf"
-    rec = run_zfp(ents, ["x", "2-3,6"], out, ["Y", None], existing={out})
+    rec = run_pdfmerge(ents, ["x", "2-3,6"], out, ["Y", None], existing={out})
     assert len(rec["plots"]) == 3
     xs = [round(p[0][0]) for p in rec["plots"]]
     assert [round(origins[i][0]) for i in (1, 2, 5)] == xs
@@ -235,13 +229,13 @@ def test_zfp_selection_and_overwrite():
 def test_zfp_overwrite_declined_cancels():
     ents, _ = M.build(count=3, seed=2)
     out = "C:\\out\\a.pdf"
-    rec = run_zfp(ents, [""], out, [None], existing={out})   # Enter = 기본값 N
+    rec = run_pdfmerge(ents, [""], out, [None], existing={out})   # Enter = 기본값 N
     assert rec["plots"] == [] and rec["startapp"] == []
 
 
 def test_zfp_confirm_no_cancels():
     ents, _ = M.build(count=3, seed=2)
-    rec = run_zfp(ents, [""], "C:\\out\\b.pdf", ["N"])
+    rec = run_pdfmerge(ents, [""], "C:\\out\\b.pdf", ["N"])
     assert rec["plots"] == [] and rec["startapp"] == []
 
 

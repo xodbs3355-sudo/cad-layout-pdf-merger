@@ -1,12 +1,10 @@
 ;;; ==================================================================
-;;; zframe.lsp  -  1단계: 프레임 찾기 + Z 순서 번호 표시 (출력 없음)
+;;; zframe.lsp  -  배치탭의 도면(프레임)들을 장마다 A3 PDF로 출력하고 한 파일로 합치기
 ;;;
 ;;; 명령
-;;;   ZF     : ㄱ자 표시(폴리선) 하나를 견본으로 클릭 -> 같은 ㄱ자를 모두 찾아
-;;;            프레임마다 빨간 사각형과 번호 표시 (레이어는 조건으로 쓰지 않음)
-;;;   ZFCLR  : ZF가 그린 표시(ZF_CHECK 레이어 객체)를 모두 지움
-;;;   ZF1    : (2단계 시험) 1번 프레임만 PDF로 출력
-;;;   ZFP    : 프레임 출력(전체 또는 선택) + 한 PDF로 합치기 (zfmerge.exe 사용)
+;;;   PDFMERGE : ㄱ자 표시(폴리선) 하나를 견본으로 클릭 -> 같은 ㄱ자를 모두 찾아
+;;;              프레임마다 번호 미리보기 -> 번호 선택 -> 저장 위치 -> 출력 + 합치기
+;;;              (합치기는 같은 폴더의 zfmerge.exe 가 함)
 ;;;
 ;;; 사용 함수: 기본 AutoLISP 함수만 사용 (vl- / vla- / vlax- 함수 사용 안 함)
 ;;; 좌표: 배치탭(용지 공간) LWPOLYLINE의 DXF 10 좌표를 그대로 사용
@@ -261,72 +259,8 @@
         built   (zf-build-frames corners *ZF-TOL-PT*))
   (list got corners (zf-zorder (car built) *ZF-TOL-ROW*) (cadr built)))
 
-;;; ---------- 명령: ZF ----------
-(defun c:ZF (/ *error* t0 tab prob ps samp color det got lines corners
-               fails ordered n h)
-  (defun *error* (msg)
-    (princ (strcat "\n[ZF] 오류: " msg))
-    (princ))
-  (cond
-    ((setq prob (zf-space-problem))
-     (princ (strcat "\n[ZF] " prob)))
-    (t
-     (setq tab (getvar "CTAB")
-           ps  (zf-pick-sample "[ZF]"))
-     (if (not ps)
-       (princ "\n[ZF] 선택 없음 - 취소했습니다.")
-       (progn
-         (setq samp  (car ps)
-               color (cadr ps)
-               t0    (getvar "DATE")
-               det     (zf-detect tab samp color)
-               got     (nth 0 det)
-               lines   (car got)
-               corners (nth 1 det)
-               ordered (nth 2 det)
-               fails   (nth 3 det))
-         ;; 표시 그리기
-         (zf-ensure-layer *ZF-MARK-LAYER*)
-         (setq n 0)
-         (foreach f ordered
-           (setq n (1+ n)
-                 h (- (nth 3 f) (nth 1 f)))
-           (zf-rect (nth 0 f) (nth 1 f) (nth 2 f) (nth 3 f) tab *ZF-MARK-LAYER*)
-           (zf-text (/ (+ (nth 0 f) (nth 2 f)) 2.0) (/ (+ (nth 1 f) (nth 3 f)) 2.0)
-                    (* h 0.3) (itoa n) tab *ZF-MARK-LAYER*))
-         (setq h (if ordered (* 0.1 (- (nth 3 (car ordered)) (nth 1 (car ordered)))) 10.0))
-         (foreach e fails
-           (zf-text (car e) (cadr e) h "?" tab *ZF-MARK-LAYER*))
-         ;; 결과 보고
-         (princ (strcat "\n[ZF] 배치탭: " tab
-                        "   견본 팔 길이: " (rtos (nth 2 samp) 2 2) " / " (rtos (nth 3 samp) 2 2)
-                        "   견본 색상: " (if color (itoa color) "BYLAYER(색 조건 없음)")))
-         (princ (strcat "\n[ZF] 후보 폴리선(점 3개" (if color ", 같은 색" "") ") "
-                        (itoa (cadr got)) "개 -> ㄱ자 통과 " (itoa (/ (length lines) 2)) "개"))
-         (foreach e (caddr got)
-           (princ (strcat "\n     탈락: " (car e) " " (itoa (cdr e)) "개")))
-         (princ (strcat "\n[ZF] 꼭짓점: 왼쪽위 " (itoa (length (zf-of-type "TL" corners)))
-                        ", 오른쪽위 " (itoa (length (zf-of-type "TR" corners)))
-                        ", 왼쪽아래 " (itoa (length (zf-of-type "BL" corners)))
-                        ", 오른쪽아래 " (itoa (length (zf-of-type "BR" corners)))))
-         (princ (strcat "\n[ZF] 프레임 " (itoa (length ordered)) "개, 실패 "
-                        (itoa (length fails)) "개"))
-         (setq n 0)
-         (foreach f ordered
-           (setq n (1+ n))
-           (princ (strcat "\n  " (itoa n) ": 왼쪽아래 " (zf-fmt (nth 0 f) (nth 1 f))
-                          "  오른쪽위 " (zf-fmt (nth 2 f) (nth 3 f))
-                          "  크기 " (rtos (- (nth 2 f) (nth 0 f)) 2 2)
-                          " x " (rtos (- (nth 3 f) (nth 1 f)) 2 2))))
-         (foreach e fails
-           (princ (strcat "\n  실패 ? 왼쪽위 " (zf-fmt (car e) (cadr e)) " : " (caddr e))))
-         (princ (strcat "\n[ZF] 처리 시간 약 "
-                        (rtos (* (- (getvar "DATE") t0) 86400.0) 2 2) "초"))
-         (princ "\n[ZF] 표시 지우기: ZFCLR")))))
-  (princ))
-
 ;;; ==================================================================
-;;; 2단계: PDF 출력
+;;; PDF 출력
 ;;; ==================================================================
 
 ;;; ---------- 출력 설정값 ----------
@@ -340,18 +274,6 @@
     (if (= (substr name i 1) ".") (setq dot i))
     (setq i (1+ i)))
   (if dot (substr name 1 (1- dot)) name))
-
-;;; 출력 파일 경로: <도면 폴더>\<도면 이름>_<배치탭>_<번호 2자리>.pdf
-;;; 같은 이름 파일이 있으면 _2, _3 ... 을 붙여 덮어쓰지 않음
-(defun zf-out-path (tab no / base nn path k)
-  (setq base (strcat (getvar "DWGPREFIX") (zf-strip-ext (getvar "DWGNAME")) "_" tab "_")
-        nn   (if (< no 10) (strcat "0" (itoa no)) (itoa no))
-        path (strcat base nn ".pdf")
-        k    1)
-  (while (findfile path)
-    (setq k    (1+ k)
-          path (strcat base nn "_" (itoa k) ".pdf")))
-  path)
 
 ;;; 바꿀 시스템 변수 저장 / 복원
 (defun zf-sv-save (names / r)
@@ -392,56 +314,8 @@
 (defun zf-now-ms (/ ms)
   (if (setq ms (getvar "MILLISECS")) ms (* (getvar "DATE") 86400000.0)))
 
-;;; ---------- 명령: ZF1 (2단계 시험: 1번 프레임만 출력) ----------
-(defun c:ZF1 (/ *error* saved tab prob ps det ordered fails f path t0 ok)
-  (defun *error* (msg)
-    (if saved (zf-sv-restore saved))
-    (princ (strcat "\n[ZF1] 오류: " msg))
-    (princ))
-  (cond
-    ((setq prob (zf-space-problem))
-     (princ (strcat "\n[ZF1] " prob)))
-    (t
-     (setq tab (getvar "CTAB")
-           ps  (zf-pick-sample "[ZF1]"))
-     (if (not ps)
-       (princ "\n[ZF1] 선택 없음 - 취소했습니다.")
-       (progn
-         (setq det     (zf-detect tab (car ps) (cadr ps))
-               ordered (nth 2 det)
-               fails   (nth 3 det))
-         (princ (strcat "\n[ZF1] 프레임 " (itoa (length ordered)) "개, 실패 "
-                        (itoa (length fails)) "개"))
-         (if (not ordered)
-           (princ "\n[ZF1] 출력할 프레임이 없습니다.")
-           (progn
-             (setq f    (car ordered)
-                   path (zf-out-path tab 1))
-             (princ (strcat "\n[ZF1] 1번 출력: 왼쪽아래 " (zf-fmt (nth 0 f) (nth 1 f))
-                            "  오른쪽위 " (zf-fmt (nth 2 f) (nth 3 f))))
-             (princ (strcat "\n[ZF1] 파일: " path))
-             ;; 저장 창 끔, 객체 스냅 끔, 출력을 앞에서(끝날 때까지 기다림) 진행
-             (setq saved (zf-sv-save '("FILEDIA" "OSMODE" "BACKGROUNDPLOT")))
-             (setvar "FILEDIA" 0)
-             (setvar "OSMODE" 0)
-             (if (getvar "BACKGROUNDPLOT") (setvar "BACKGROUNDPLOT" 0))
-             (setq t0 (zf-now-ms)
-                   ok (zf-plot-frame f path))
-             (zf-sv-restore saved)
-             (setq saved nil)
-             (cond
-               ((not ok)
-                (princ "\n[ZF1] 실패: -PLOT 질문 순서가 예상과 달라 취소했습니다. F2 창 기록을 보내 주세요."))
-               ((findfile path)
-                (princ (strcat "\n[ZF1] 완료 (" (rtos (/ (- (zf-now-ms) t0) 1000.0) 2 2) "초): " path)))
-               (t
-                (princ "\n[ZF1] 명령은 끝났지만 PDF 파일을 찾지 못했습니다. F2 창 기록을 보내 주세요.")))))
-         (if fails
-           (princ "\n[ZF1] 실패한 프레임이 있습니다. ZF로 위치를 확인하세요."))))))
-  (princ))
-
 ;;; ==================================================================
-;;; 3단계: 전체(또는 선택) 출력 + 합치기
+;;; 출력 + 합치기
 ;;; ==================================================================
 (setq *ZF-CTB*    "")    ; 플롯 스타일(ctb) 이름. ""이면 배치에 지정된 값 그대로
 (setq *ZF-MERGER* nil)   ; zfmerge.exe 경로 (처음 실행 때 찾거나 물어봄)
@@ -561,19 +435,45 @@
     (setq r (cons p r) i (1+ i)))
   (reverse r))
 
-;;; ---------- 명령: ZFP (출력 + 합치기) ----------
-(defun c:ZFP (/ *error* saved tab prob ps det ordered fails sel ans out ow
+;;; 찾기 결과 보고 (문제 확인용): 견본, 후보/탈락, 꼭짓점, 프레임 좌표, 실패
+(defun zf-report (tab samp color det / got corners ordered fails n)
+  (setq got (nth 0 det) corners (nth 1 det) ordered (nth 2 det) fails (nth 3 det))
+  (princ (strcat "\n[PDFMERGE] 배치탭: " tab
+                 "   견본 팔 길이: " (rtos (nth 2 samp) 2 2) " / " (rtos (nth 3 samp) 2 2)
+                 "   견본 색상: " (if color (itoa color) "BYLAYER(색 조건 없음)")))
+  (princ (strcat "\n[PDFMERGE] 후보 폴리선(점 3개" (if color ", 같은 색" "") ") "
+                 (itoa (cadr got)) "개 -> ㄱ자 통과 " (itoa (/ (length (car got)) 2)) "개"))
+  (foreach e (caddr got)
+    (princ (strcat "\n     탈락: " (car e) " " (itoa (cdr e)) "개")))
+  (princ (strcat "\n[PDFMERGE] 꼭짓점: 왼쪽위 " (itoa (length (zf-of-type "TL" corners)))
+                 ", 오른쪽위 " (itoa (length (zf-of-type "TR" corners)))
+                 ", 왼쪽아래 " (itoa (length (zf-of-type "BL" corners)))
+                 ", 오른쪽아래 " (itoa (length (zf-of-type "BR" corners)))))
+  (setq n 0)
+  (foreach f ordered
+    (setq n (1+ n))
+    (princ (strcat "\n  " (itoa n) ": 왼쪽아래 " (zf-fmt (nth 0 f) (nth 1 f))
+                   "  오른쪽위 " (zf-fmt (nth 2 f) (nth 3 f))
+                   "  크기 " (rtos (- (nth 2 f) (nth 0 f)) 2 2)
+                   " x " (rtos (- (nth 3 f) (nth 1 f)) 2 2))))
+  (foreach e fails
+    (princ (strcat "\n  실패 ? 왼쪽위 " (zf-fmt (car e) (cadr e)) " : " (caddr e)
+                   "  -> 이 프레임은 출력되지 않습니다.")))
+  (princ (strcat "\n[PDFMERGE] 프레임 " (itoa (length ordered)) "개, 실패 " (itoa (length fails)) "개")))
+
+;;; ---------- 명령: PDFMERGE (출력 + 합치기) ----------
+(defun c:PDFMERGE (/ *error* saved tab prob ps det ordered fails sel ans out ow
                 merger tmps i no f p ok t0 t1 done args)
   (defun *error* (msg)
     (if saved (zf-sv-restore saved))
     (zf-clear-marks)
-    (princ (strcat "\n[ZFP] 중단: " msg))
+    (princ (strcat "\n[PDFMERGE] 중단: " msg))
     (princ))
   (cond
     ((setq prob (zf-space-problem))
-     (princ (strcat "\n[ZFP] " prob)))
-    ((not (setq ps (zf-pick-sample "[ZFP]")))
-     (princ "\n[ZFP] 선택 없음 - 취소했습니다."))
+     (princ (strcat "\n[PDFMERGE] " prob)))
+    ((not (setq ps (zf-pick-sample "[PDFMERGE]")))
+     (princ "\n[PDFMERGE] 선택 없음 - 취소했습니다."))
     (t
      (setq tab     (getvar "CTAB")
            det     (zf-detect tab (car ps) (cadr ps))
@@ -582,12 +482,9 @@
      ;; 미리보기: 번호 표시
      (zf-clear-marks)
      (zf-draw-marks ordered fails tab)
-     (princ (strcat "\n[ZFP] 프레임 " (itoa (length ordered)) "개, 실패 " (itoa (length fails)) "개"))
-     (foreach e fails
-       (princ (strcat "\n  실패 ? 왼쪽위 " (zf-fmt (car e) (cadr e)) " : " (caddr e)
-                      "  -> 이 프레임은 출력되지 않습니다.")))
+     (zf-report tab (car ps) (cadr ps) det)
      (cond
-       ((not ordered) (princ "\n[ZFP] 출력할 프레임이 없습니다."))
+       ((not ordered) (princ "\n[PDFMERGE] 출력할 프레임이 없습니다."))
        (t
         ;; 출력할 번호
         (setq sel "")
@@ -595,24 +492,24 @@
           (setq ans (getstring T (strcat "\n출력할 번호 (Enter = 전체 1~" (itoa (length ordered))
                                           ", 예: 1-5,8): "))
                 sel (zf-parse-sel ans (length ordered)))
-          (if (= (type sel) 'STR) (princ (strcat "\n[ZFP] " sel " - 다시 입력하세요."))))
+          (if (= (type sel) 'STR) (princ (strcat "\n[PDFMERGE] " sel " - 다시 입력하세요."))))
         ;; 결과 파일
         (setq out (getfiled "합친 PDF 저장"
                             (strcat (getvar "DWGPREFIX") (zf-strip-ext (getvar "DWGNAME")) "_" tab ".pdf")
                             "pdf" 1))
         (cond
-          ((not out) (princ "\n[ZFP] 저장 위치 선택 안 함 - 취소했습니다."))
+          ((not out) (princ "\n[PDFMERGE] 저장 위치 선택 안 함 - 취소했습니다."))
           ((and (findfile out)
                 (progn (initget "Y N")
                        (/= "Y" (getkword "\n같은 이름 파일이 있습니다. 덮어쓸까요? [Y/N] <N>: "))))
-           (princ "\n[ZFP] 덮어쓰지 않음 - 취소했습니다."))
+           (princ "\n[PDFMERGE] 덮어쓰지 않음 - 취소했습니다."))
           ((not (setq merger (zf-find-merger)))
-           (princ "\n[ZFP] zfmerge.exe를 찾지 못해 취소했습니다."))
+           (princ "\n[PDFMERGE] zfmerge.exe를 찾지 못해 취소했습니다."))
           (t
            (setq ow (findfile out))
            (initget "Y N")
            (if (= "N" (getkword (strcat "\n" (itoa (length sel)) "장을 출력해서 합칩니다. 진행할까요? [Y/N] <Y>: ")))
-             (princ "\n[ZFP] 취소했습니다.")
+             (princ "\n[PDFMERGE] 취소했습니다.")
              (progn
                (setq tmps  (zf-tmp-paths (zf-dir-of out) (length sel))
                      saved (zf-sv-save '("FILEDIA" "OSMODE" "BACKGROUNDPLOT"))
@@ -630,44 +527,31 @@
                  (cond
                    ((not (zf-plot-frame f p))
                     (setq ok nil)
-                    (princ (strcat "\n[ZFP] " (itoa no) "번 실패: -PLOT 질문 순서가 예상과 다릅니다.")))
+                    (princ (strcat "\n[PDFMERGE] " (itoa no) "번 실패: -PLOT 질문 순서가 예상과 다릅니다.")))
                    ((not (findfile p))
                     (setq ok nil)
-                    (princ (strcat "\n[ZFP] " (itoa no) "번 실패: PDF가 만들어지지 않았습니다.")))
+                    (princ (strcat "\n[PDFMERGE] " (itoa no) "번 실패: PDF가 만들어지지 않았습니다.")))
                    (t
                     (setq done (cons p done))
-                    (princ (strcat "\n[ZFP] " (itoa (1+ i)) "/" (itoa (length sel)) " : "
+                    (princ (strcat "\n[PDFMERGE] " (itoa (1+ i)) "/" (itoa (length sel)) " : "
                                    (itoa no) "번 완료 (" (rtos (/ (- (zf-now-ms) t1) 1000.0) 2 1) "초)"))))
                  (setq i (1+ i)))
                (zf-sv-restore saved)
                (setq saved nil)
                (if (not ok)
                  (progn
-                   (princ "\n[ZFP] 출력 중 실패하여 합치지 않았습니다. 만들어진 임시 PDF:")
+                   (princ "\n[PDFMERGE] 출력 중 실패하여 합치지 않았습니다. 만들어진 임시 PDF:")
                    (foreach p (reverse done) (princ (strcat "\n  " p)))
-                   (princ "\n[ZFP] F2 창 기록을 보내 주세요."))
+                   (princ "\n[PDFMERGE] F2 창 기록을 보내 주세요."))
                  (progn
                    (setq args (strcat (if ow "--overwrite " "") "--delete \"" out "\""))
                    (foreach p tmps (setq args (strcat args " \"" p "\"")))
-                   (princ (strcat "\n[ZFP] 출력 완료 (" (rtos (/ (- (zf-now-ms) t0) 1000.0) 2 1)
+                   (princ (strcat "\n[PDFMERGE] 출력 완료 (" (rtos (/ (- (zf-now-ms) t0) 1000.0) 2 1)
                                   "초). 합치기 시작 -> 결과는 잠시 뒤 메시지 창으로 표시됩니다."))
-                   (princ (strcat "\n[ZFP] 합칠 파일: " out))
+                   (princ (strcat "\n[PDFMERGE] 합칠 파일: " out))
                    (startapp merger args)))))))))
      (zf-clear-marks)))
   (princ))
 
-;;; ---------- 명령: ZFCLR ----------
-(defun c:ZFCLR (/ ss i)
-  (setq ss (ssget "X" (list (cons 8 *ZF-MARK-LAYER*))))
-  (setq i 0)
-  (if ss
-    (progn
-      (while (< i (sslength ss))
-        (entdel (ssname ss i))
-        (setq i (1+ i)))
-      (princ (strcat "\n[ZFCLR] " (itoa i) "개 지움")))
-    (princ "\n[ZFCLR] 지울 표시 없음"))
-  (princ))
-
-(princ "\n[zframe.lsp] 로드됨. 명령: ZF (프레임 찾기/번호 표시), ZFCLR (표시 지우기), ZF1 (1번 프레임 PDF 출력 시험), ZFP (출력+합치기)")
+(princ "\n[zframe.lsp] 로드됨. 명령: PDFMERGE (도면 PDF 출력 + 합치기)")
 (princ)
