@@ -243,3 +243,16 @@ def test_zfp_confirm_no_cancels():
     ents, _ = M.build(count=3, seed=2)
     rec = run_zfp(ents, [""], "C:\\out\\b.pdf", ["N"])
     assert rec["plots"] == [] and rec["startapp"] == []
+
+
+def test_find_in_trusted():
+    it = make_interp([])
+    tp = "C:\\x\\a;;C:\\Users\\l\\Downloads\\cad-layout-pdf-merger-main\\lisp\\...;D:\\b\\"
+    want = "C:\\Users\\l\\Downloads\\cad-layout-pdf-merger-main\\lisp\\zfmerge.exe"
+    it.g[Sym("GETVAR")] = lambda n: tp if n == "TRUSTEDPATHS" else None
+    it.g[Sym("FINDFILE")] = lambda p: p if p == want else None
+    assert it.g[Sym("ZF-FIND-IN-TRUSTED")]() == want
+    it.g[Sym("FINDFILE")] = lambda p: None
+    assert it.g[Sym("ZF-FIND-IN-TRUSTED")]() is None
+    it.g[Sym("GETVAR")] = lambda n: None
+    assert it.g[Sym("ZF-FIND-IN-TRUSTED")]() is None

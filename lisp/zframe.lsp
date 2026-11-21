@@ -529,9 +529,25 @@
   (foreach e fails (zf-text (car e) (cadr e) h "?" tab *ZF-MARK-LAYER*)))
 
 ;;; zfmerge.exe 찾기: 이미 찾은 경로 -> AutoCAD 검색 경로 -> 직접 선택
+;;; 신뢰할 수 있는 위치(TRUSTEDPATHS) 폴더들에서 zfmerge.exe 찾기
+;;; TRUSTEDPATHS 예: "C:\a\lisp;C:\b\..."  (끝의 \... 는 하위 폴더 포함 표시)
+(defun zf-find-in-trusted (/ tp r d)
+  (if (setq tp (getvar "TRUSTEDPATHS"))
+    (foreach d (zf-split-str tp ";")
+      (if (and (not r) (/= d ""))
+        (progn
+          (if (and (>= (strlen d) 4) (= (substr d (- (strlen d) 3)) "\\..."))
+            (setq d (substr d 1 (- (strlen d) 4))))
+          (if (and (> (strlen d) 0) (/= (substr d (strlen d)) "\\"))
+            (setq d (strcat d "\\")))
+          (setq r (findfile (strcat d "zfmerge.exe")))))))
+  r)
+
+;;; zfmerge.exe 찾기: 이미 찾은 경로 -> 신뢰 위치 -> AutoCAD 검색 경로 -> 직접 선택
 (defun zf-find-merger ()
   (cond
     ((and *ZF-MERGER* (findfile *ZF-MERGER*)) *ZF-MERGER*)
+    ((setq *ZF-MERGER* (zf-find-in-trusted)) *ZF-MERGER*)
     ((setq *ZF-MERGER* (findfile "zfmerge.exe")) *ZF-MERGER*)
     (t (setq *ZF-MERGER* (getfiled "zfmerge.exe 위치를 선택하세요" "" "exe" 0)))))
 
@@ -576,7 +592,7 @@
         ;; 출력할 번호
         (setq sel "")
         (while (= (type sel) 'STR)
-          (setq ans (getstring T (strcat "\n[ZFP] 출력할 번호 (Enter = 전체 1~" (itoa (length ordered))
+          (setq ans (getstring T (strcat "\n출력할 번호 (Enter = 전체 1~" (itoa (length ordered))
                                           ", 예: 1-5,8): "))
                 sel (zf-parse-sel ans (length ordered)))
           (if (= (type sel) 'STR) (princ (strcat "\n[ZFP] " sel " - 다시 입력하세요."))))
@@ -588,14 +604,14 @@
           ((not out) (princ "\n[ZFP] 저장 위치 선택 안 함 - 취소했습니다."))
           ((and (findfile out)
                 (progn (initget "Y N")
-                       (/= "Y" (getkword "\n[ZFP] 같은 이름 파일이 있습니다. 덮어쓸까요? [Y/N] <N>: "))))
+                       (/= "Y" (getkword "\n같은 이름 파일이 있습니다. 덮어쓸까요? [Y/N] <N>: "))))
            (princ "\n[ZFP] 덮어쓰지 않음 - 취소했습니다."))
           ((not (setq merger (zf-find-merger)))
            (princ "\n[ZFP] zfmerge.exe를 찾지 못해 취소했습니다."))
           (t
            (setq ow (findfile out))
            (initget "Y N")
-           (if (= "N" (getkword (strcat "\n[ZFP] " (itoa (length sel)) "장을 출력해서 합칩니다. 진행할까요? [Y/N] <Y>: ")))
+           (if (= "N" (getkword (strcat "\n" (itoa (length sel)) "장을 출력해서 합칩니다. 진행할까요? [Y/N] <Y>: ")))
              (princ "\n[ZFP] 취소했습니다.")
              (progn
                (setq tmps  (zf-tmp-paths (zf-dir-of out) (length sel))

@@ -26,6 +26,12 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
+// 삭제 재시도 설정 (시험에서 바꿀 수 있게 변수로 둠)
+var (
+	deleteRetries = 10
+	deleteWait    = time.Second
+)
+
 type options struct {
 	overwrite bool
 	delete    bool
@@ -138,12 +144,28 @@ func run(o options, log func(string)) (string, error) {
 
 	deleted := 0
 	if o.delete {
-		for _, f := range files {
-			if err := os.Remove(f); err != nil {
-				log(fmt.Sprintf("  삭제 실패(무시하고 계속): %s (%v)", f, err))
-			} else {
-				deleted++
+		// 다른 프로그램(백신 검사, PDF 뷰어 등)이 잠깐 잡고 있으면 지워지지 않으므로
+		// 실패한 파일만 1초 간격으로 최대 deleteRetries 번 다시 시도
+		left := files
+		for try := 0; len(left) > 0 && try <= deleteRetries; try++ {
+			if try > 0 {
+				time.Sleep(deleteWait)
 			}
+			var still []string
+			for _, f := range left {
+				if err := os.Remove(f); err != nil {
+					if try == deleteRetries {
+						log(fmt.Sprintf("  삭제 실패(%d회 시도): %s (%v)", try+1, f, err))
+					}
+					still = append(still, f)
+				} else {
+					deleted++
+				}
+			}
+			if len(still) > 0 && try < deleteRetries {
+				log(fmt.Sprintf("  삭제 대기: %d개 파일 사용 중, %v 후 다시 시도 (%d/%d)", len(still), deleteWait, try+1, deleteRetries))
+			}
+			left = still
 		}
 		for _, d := range dirs {
 			if err := os.Remove(d); err != nil { // 비어 있을 때만 지워짐
