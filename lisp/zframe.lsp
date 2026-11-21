@@ -2,11 +2,12 @@
 ;;; zframe.lsp  -  1단계: 프레임 찾기 + Z 순서 번호 표시 (출력 없음)
 ;;;
 ;;; 명령
-;;;   ZF     : ㄱ자 표시 선 하나를 클릭 -> 프레임을 찾아 빨간 사각형과 번호 표시
+;;;   ZF     : ㄱ자 표시(폴리선) 하나를 견본으로 클릭 -> 같은 ㄱ자를 모두 찾아
+;;;            프레임마다 빨간 사각형과 번호 표시 (레이어는 조건으로 쓰지 않음)
 ;;;   ZFCLR  : ZF가 그린 표시(ZF_CHECK 레이어 객체)를 모두 지움
 ;;;
 ;;; 사용 함수: 기본 AutoLISP 함수만 사용 (vl- / vla- / vlax- 함수 사용 안 함)
-;;; 좌표: 배치탭(용지 공간) LINE의 DXF 10/11 좌표(WCS)를 그대로 사용
+;;; 좌표: 배치탭(용지 공간) LWPOLYLINE의 DXF 10 좌표를 그대로 사용
 ;;; ==================================================================
 
 ;;; ---------- 설정값 (도면 단위, 필요하면 숫자만 바꿔서 다시 로드) ----------
@@ -28,19 +29,61 @@
   (foreach e lst (setq out (zf-ins e out lessp)))
   out)
 
-;;; ---------- 1) 레이어의 LINE 모으기 (현재 배치탭만) ----------
-;;; 결과: ( ((x1 y1) (x2 y2)) ... )
-(defun zf-get-lines (lay tab / ss i ed lst)
-  (setq ss (ssget "X" (list '(0 . "LINE") (cons 8 lay) (cons 410 tab))))
-  (setq i 0)
+;;; ---------- 1) ㄱ자 폴리선 모으기 (현재 배치탭, 견본과 같은 것만) ----------
+;;; LWPOLYLINE 정보 읽기
+(defun zf-pl-pts (ed / r)
+  (foreach p ed (if (= (car p) 10) (setq r (cons (zf-pt2 (cdr p)) r))))
+  (reverse r))
+(defun zf-pl-bulge (ed / b)   ; 곡선 구간(볼록값 42)이 하나라도 있으면 T
+  (foreach p ed (if (and (= (car p) 42) (> (abs (cdr p)) 1e-9)) (setq b T)))
+  b)
+(defun zf-pl-closed (ed) (= 1 (logand 1 (cdr (assoc 70 ed)))))
+
+;;; ㄱ자 판정
+;;; 맞으면 (선1 선2 짧은팔길이 긴팔길이), 아니면 탈락 사유 문자열
+;;; 선1, 선2는 가운데 점(꼭짓점)에서 양 끝으로 가는 선
+(defun zf-mark-shape (ed tol / pts ln1 ln2 hv a b)
+  (setq pts (zf-pl-pts ed))
+  (cond
+    ((/= (length pts) 3) "점 개수 3개 아님")
+    ((zf-pl-closed ed) "닫힌 선")
+    ((zf-pl-bulge ed) "곡선 구간 있음")
+    (t
+     (setq ln1 (list (nth 1 pts) (nth 0 pts))
+           ln2 (list (nth 1 pts) (nth 2 pts))
+           hv  (zf-split (list ln1 ln2) tol))
+     (if (and (= (length (car hv)) 1) (= (length (cadr hv)) 1))
+       (progn
+         (setq a (distance (nth 0 pts) (nth 1 pts))
+               b (distance (nth 1 pts) (nth 2 pts)))
+         (list ln1 ln2 (min a b) (max a b)))
+       "가로+세로 모양 아님"))))
+
+;;; (사유 . 개수) 목록에 1 더하기
+(defun zf-count (key al / e)
+  (if (setq e (assoc key al))
+    (subst (cons key (1+ (cdr e))) e al)
+    (cons (cons key 1) al)))
+
+;;; samp : 견본의 zf-mark-shape 결과, color : 견본 색상 번호(nil이면 BYLAYER -> 색 조건 없음)
+;;; 결과: (선목록 후보수 탈락목록)   탈락목록: (("사유" . 개수) ...)
+(defun zf-get-marks (tab samp color tol / flt ss i ed r lines cnt rej)
+  (setq flt (list '(0 . "LWPOLYLINE") (cons 410 tab) '(90 . 3)))
+  (if color (setq flt (append flt (list (cons 62 color)))))
+  (setq ss (ssget "X" flt)  i 0  cnt 0)
   (if ss
     (while (< i (sslength ss))
-      (setq ed (entget (ssname ss i)))
-      (setq lst (cons (list (zf-pt2 (cdr (assoc 10 ed)))
-                            (zf-pt2 (cdr (assoc 11 ed))))
-                      lst))
+      (setq ed  (entget (ssname ss i))
+            cnt (1+ cnt)
+            r   (zf-mark-shape ed tol))
+      (cond
+        ((= (type r) 'STR) (setq rej (zf-count r rej)))
+        ((not (and (zf-near (nth 2 r) (nth 2 samp) tol)
+                   (zf-near (nth 3 r) (nth 3 samp) tol)))
+         (setq rej (zf-count "팔 길이 다름" rej)))
+        (t (setq lines (cons (car r) (cons (cadr r) lines)))))
       (setq i (1+ i))))
-  lst)
+  (list lines cnt rej))
 
 ;;; ---------- 2) 가로선 / 세로선 나누기 ----------
 ;;; 결과: (가로선목록 세로선목록)
@@ -181,8 +224,8 @@
                  (cons 40 h) (cons 1 str) '(72 . 1) '(73 . 2))))
 
 ;;; ---------- 명령: ZF ----------
-(defun c:ZF (/ *error* t0 tab pick ed lay lines hv corners built frames fails
-               ordered n h f others)
+(defun c:ZF (/ *error* t0 tab pick ed r samp color got lines hv corners built
+               frames fails ordered n h f)
   (defun *error* (msg)
     (princ (strcat "\n[ZF] 오류: " msg))
     (princ))
@@ -193,21 +236,25 @@
      (princ "\n[ZF] 뷰포트 안(모형 공간)이 활성 상태입니다. 뷰포트 바깥을 더블클릭하거나 PSPACE 명령으로 전환한 뒤 실행하세요."))
     (t
      (setq tab (getvar "CTAB"))
-     ;; ㄱ자 선 선택 (LINE이 아니면 다시 묻기, 빈 곳 클릭/Enter면 취소)
-     (while (and (not lay)
-                 (setq pick (entsel "\nㄱ자 표시 선 하나를 클릭하세요 (빈 곳/Enter = 취소): ")))
+     ;; 견본 ㄱ자 선택 (ㄱ자 폴리선이 아니면 다시 묻기, 빈 곳 클릭/Enter면 취소)
+     (while (and (not samp)
+                 (setq pick (entsel "\nㄱ자 표시 하나를 클릭하세요 (빈 곳/Enter = 취소): ")))
        (setq ed (entget (car pick)))
-       (if (= (cdr (assoc 0 ed)) "LINE")
-         (setq lay (cdr (assoc 8 ed)))
-         (princ (strcat "\n[ZF] 선택한 객체 종류: " (cdr (assoc 0 ed))
-                        " (LINE 아님) - 다시 선택하세요."))))
-     (if (not lay)
+       (cond
+         ((/= (cdr (assoc 0 ed)) "LWPOLYLINE")
+          (princ (strcat "\n[ZF] 선택한 객체 종류: " (cdr (assoc 0 ed))
+                         " (LWPOLYLINE 아님) - 다시 선택하세요.")))
+         ((= (type (setq r (zf-mark-shape ed *ZF-TOL-PT*))) 'STR)
+          (princ (strcat "\n[ZF] ㄱ자 모양이 아닙니다(" r ") - 다시 선택하세요.")))
+         (t (setq samp  r
+                  color (cdr (assoc 62 ed))))))
+     (if (not samp)
        (princ "\n[ZF] 선택 없음 - 취소했습니다.")
        (progn
          (setq t0 (getvar "DATE"))
-         (setq lines   (zf-get-lines lay tab)
+         (setq got     (zf-get-marks tab samp color *ZF-TOL-PT*)
+               lines   (car got)
                hv      (zf-split lines *ZF-TOL-PT*)
-               others  (- (length lines) (length (car hv)) (length (cadr hv)))
                corners (zf-find-corners (car hv) (cadr hv) *ZF-TOL-PT*)
                built   (zf-build-frames corners *ZF-TOL-PT*)
                frames  (car built)
@@ -226,10 +273,13 @@
          (foreach e fails
            (zf-text (car e) (cadr e) h "?" tab *ZF-MARK-LAYER*))
          ;; 결과 보고
-         (princ (strcat "\n[ZF] 배치탭: " tab "   레이어: " lay))
-         (princ (strcat "\n[ZF] LINE " (itoa (length lines)) "개 (가로 "
-                        (itoa (length (car hv))) ", 세로 " (itoa (length (cadr hv)))
-                        ", 기타 " (itoa others) ")"))
+         (princ (strcat "\n[ZF] 배치탭: " tab
+                        "   견본 팔 길이: " (rtos (nth 2 samp) 2 2) " / " (rtos (nth 3 samp) 2 2)
+                        "   견본 색상: " (if color (itoa color) "BYLAYER(색 조건 없음)")))
+         (princ (strcat "\n[ZF] 후보 폴리선(점 3개" (if color ", 같은 색" "") ") "
+                        (itoa (cadr got)) "개 -> ㄱ자 통과 " (itoa (/ (length lines) 2)) "개"))
+         (foreach e (caddr got)
+           (princ (strcat "\n     탈락: " (car e) " " (itoa (cdr e)) "개")))
          (princ (strcat "\n[ZF] 꼭짓점: 왼쪽위 " (itoa (length (zf-of-type "TL" corners)))
                         ", 오른쪽위 " (itoa (length (zf-of-type "TR" corners)))
                         ", 왼쪽아래 " (itoa (length (zf-of-type "BL" corners)))

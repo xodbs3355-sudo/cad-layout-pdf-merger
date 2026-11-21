@@ -97,6 +97,47 @@ def zorder(frames, tolrow):
     return out
 
 
+def mark_shape(e, tol):
+    """LISP zf-mark-shape 와 동일. 맞으면 (선1, 선2, 짧은팔, 긴팔), 아니면 사유 문자열"""
+    pts = e["pts"]
+    if len(pts) != 3:
+        return "점 개수 3개 아님"
+    if e["closed"]:
+        return "닫힌 선"
+    if any(abs(b) > 1e-9 for b in e["bulges"]):
+        return "곡선 구간 있음"
+    ln1, ln2 = (pts[1], pts[0]), (pts[1], pts[2])
+    h, v = split([ln1, ln2], tol)
+    if len(h) == 1 and len(v) == 1:
+        a, b = math.dist(pts[0], pts[1]), math.dist(pts[1], pts[2])
+        return (ln1, ln2, min(a, b), max(a, b))
+    return "가로+세로 모양 아님"
+
+
+def get_marks(ents, samp, color, tol):
+    """LISP zf-get-marks 와 동일. ssget 필터(점 3개, 색)를 먼저 적용"""
+    lines, cnt, rej = [], 0, {}
+    for e in ents:
+        if len(e["pts"]) != 3 or (color is not None and e["color"] != color):
+            continue
+        cnt += 1
+        r = mark_shape(e, tol)
+        if isinstance(r, str):
+            rej[r] = rej.get(r, 0) + 1
+        elif not (near(r[2], samp[2], tol) and near(r[3], samp[3], tol)):
+            rej["팔 길이 다름"] = rej.get("팔 길이 다름", 0) + 1
+        else:
+            lines += [r[0], r[1]]
+    return lines, cnt, rej
+
+
+def run_marks(ents, samp_ent, tol_pt=0.5, tol_row=5.0):
+    samp = mark_shape(samp_ent, tol_pt)
+    lines, cnt, rej = get_marks(ents, samp, samp_ent["color"], tol_pt)
+    frames, fails, corners = run(lines, tol_pt, tol_row)
+    return frames, fails, corners, cnt, rej
+
+
 def run(lines, tol_pt=0.5, tol_row=5.0):
     h, v = split(lines, tol_pt)
     corners = find_corners(h, v, tol_pt)

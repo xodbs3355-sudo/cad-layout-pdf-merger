@@ -124,6 +124,22 @@ def lst(v):
     return [] if v is None else v
 
 
+def lisp_type(v):
+    if v is None:
+        return NIL
+    if isinstance(v, str) and not isinstance(v, Sym):
+        return Sym("STR")
+    if isinstance(v, bool):
+        return Sym("SYM")
+    if isinstance(v, int):
+        return Sym("INT")
+    if isinstance(v, float):
+        return Sym("REAL")
+    if isinstance(v, (list, tuple)):
+        return Sym("LIST")
+    return Sym("USUBR")
+
+
 class Interp:
     def __init__(self):
         self.g = {}
@@ -142,7 +158,11 @@ class Interp:
             "CADDR": lambda x: lst(x)[2] if len(lst(x)) > 2 else NIL,
             "NTH": lambda i, x: lst(x)[i] if i < len(lst(x)) else NIL,
             "LENGTH": lambda x: len(lst(x)),
-            "CONS": lambda a, b: [a] + lst(b),
+            "CONS": lambda a, b: ([a] + lst(b)) if (b is None or isinstance(b, list)) and not isinstance(b, Dotted) else Dotted((a, b)),
+            "ASSOC": lambda k, al: next((e for e in lst(al) if e[0] == k), NIL),
+            "SUBST": lambda new, old, al: L([new if e == old else e for e in lst(al)]),
+            "LOGAND": lambda *a: __import__("functools").reduce(lambda x, y: x & y, a),
+            "TYPE": lisp_type,
             "LIST": lambda *a: L(list(a)),
             "APPEND": lambda *a: L([e for x in a for e in lst(x)]),
             "REVERSE": lambda x: L(lst(x)[::-1]),
