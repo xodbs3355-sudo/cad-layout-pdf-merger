@@ -131,3 +131,115 @@ def test_strip_ext_and_out_path():
     out = it.g[Sym("ZF-OUT-PATH")]
     assert out("배치1", 1) == "C:\\d\\도면_배치1_01_3.pdf"
     assert out("배치1", 12) == "C:\\d\\도면_배치1_12.pdf"
+
+
+def test_parse_sel():
+    it = make_interp([])
+    ps = it.g[Sym("ZF-PARSE-SEL")]
+    assert ps("", 4) == [1, 2, 3, 4]
+    assert ps(" 1-3, 8,2 ", 10) == [1, 2, 3, 8]
+    assert ps("5", 5) == [5]
+    assert isinstance(ps("0-2", 5), str)
+    assert isinstance(ps("4-12", 10), str)
+    assert isinstance(ps("a", 5), str)
+    assert isinstance(ps("3-1", 5), str)
+    assert isinstance(ps("1,,2", 5), str)
+
+
+def run_zfp(ents, answers_str, out_path, kwords, existing=()):
+    """c:ZFP 전체 흐름을 가짜 AutoCAD 함수로 실행. 기록(dict) 반환"""
+    eds = [to_ed(e) for e in ents]
+    it = make_interp(eds)
+    samp_ed = to_ed(sample_of(ents))
+    rec = {"plots": [], "startapp": [], "princ": [], "setvar": [], "entmake": 0}
+    files = set(existing) | {"zfmerge.exe"}
+    clock = [0]
+    sysv = {"TILEMODE": 0, "CVPORT": 1, "CTAB": TAB, "DWGPREFIX": "C:\\d\\", "DWGNAME": "도면.dwg",
+            "CDATE": 20261122.012345, "FILEDIA": 1, "OSMODE": 4133, "BACKGROUNDPLOT": 2,
+            "CMDACTIVE": 0, "DATE": 2461000.5}
+
+    def getvar(n):
+        if n == "MILLISECS":
+            clock[0] += 500
+            return clock[0]
+        return sysv.get(n)
+
+    def setvar(n, v):
+        rec["setvar"].append((n, v))
+        sysv[n] = v
+        return v
+
+    def command(*a):
+        if a and a[0] == "-PLOT":
+            assert len(a) == 22, a
+            assert a[8] == "W" and a[11] == "F" and a[12] == "C"
+            assert sysv["FILEDIA"] == 0 and sysv["OSMODE"] == 0 and sysv["BACKGROUNDPLOT"] == 0
+            rec["plots"].append((a[9], a[10], a[19]))
+            files.add(a[19])
+        return None
+
+    sq, kq = list(answers_str), list(kwords)
+    g = it.g
+    g[Sym("GETVAR")] = getvar
+    g[Sym("SETVAR")] = setvar
+    g[Sym("COMMAND")] = command
+    g[Sym("FINDFILE")] = lambda p: ("C:\\tools\\zfmerge.exe" if p == "zfmerge.exe" else p) if p in files else None
+    g[Sym("ENTSEL")] = lambda *a: [samp_ed, [0, 0, 0]]
+    g[Sym("GETSTRING")] = lambda *a: sq.pop(0)
+    g[Sym("GETFILED")] = lambda *a: out_path
+    g[Sym("INITGET")] = lambda *a: None
+    g[Sym("GETKWORD")] = lambda *a: kq.pop(0)
+    g[Sym("STARTAPP")] = lambda *a: rec["startapp"].append(a) or 33
+    g[Sym("TBLSEARCH")] = lambda *a: True
+    g[Sym("ENTMAKE")] = lambda e: rec.__setitem__("entmake", rec["entmake"] + 1) or e
+    g[Sym("ENTDEL")] = lambda e: e
+    g[Sym("PRINC")] = lambda *a: rec["princ"].append(a[0] if a else "") or NIL_
+    g[Sym("C:ZFP")]()
+    rec["sysv"] = sysv
+    rec["files"] = files
+    return rec
+
+
+NIL_ = None
+
+
+def test_zfp_all_frames_flow():
+    ents, origins = M.build(count=7, seed=2)
+    rec = run_zfp(ents, [""], "C:\\out\\합친 도면.pdf", [None])
+    assert len(rec["plots"]) == 7
+    # Z 순서대로 출력, 임시 파일은 결과 폴더에
+    for (p1, p2, path), (x, y) in zip(rec["plots"], origins):
+        assert abs(p1[0] - x) < 0.5 and abs(p1[1] - y) < 0.5
+        assert path.startswith("C:\\out\\zf_012345_")
+    assert rec["plots"][0][2].endswith("_001.pdf")
+    # 시스템 변수 복원
+    assert rec["sysv"]["FILEDIA"] == 1 and rec["sysv"]["OSMODE"] == 4133 and rec["sysv"]["BACKGROUNDPLOT"] == 2
+    # 합치기 호출
+    assert len(rec["startapp"]) == 1
+    exe, args = rec["startapp"][0]
+    assert exe == "C:\\tools\\zfmerge.exe" or exe.endswith("zfmerge.exe")
+    assert args.startswith('--delete "C:\\out\\합친 도면.pdf"')
+    assert args.count(".pdf") == 8 and "--overwrite" not in args
+
+
+def test_zfp_selection_and_overwrite():
+    ents, origins = M.build(count=7, seed=2)
+    out = "C:\\out\\a.pdf"
+    rec = run_zfp(ents, ["x", "2-3,6"], out, ["Y", None], existing={out})
+    assert len(rec["plots"]) == 3
+    xs = [round(p[0][0]) for p in rec["plots"]]
+    assert [round(origins[i][0]) for i in (1, 2, 5)] == xs
+    assert rec["startapp"][0][1].startswith('--overwrite --delete')
+
+
+def test_zfp_overwrite_declined_cancels():
+    ents, _ = M.build(count=3, seed=2)
+    out = "C:\\out\\a.pdf"
+    rec = run_zfp(ents, [""], out, [None], existing={out})   # Enter = 기본값 N
+    assert rec["plots"] == [] and rec["startapp"] == []
+
+
+def test_zfp_confirm_no_cancels():
+    ents, _ = M.build(count=3, seed=2)
+    rec = run_zfp(ents, [""], "C:\\out\\b.pdf", ["N"])
+    assert rec["plots"] == [] and rec["startapp"] == []
