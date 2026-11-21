@@ -5,6 +5,7 @@
 ;;;   ZF     : ㄱ자 표시(폴리선) 하나를 견본으로 클릭 -> 같은 ㄱ자를 모두 찾아
 ;;;            프레임마다 빨간 사각형과 번호 표시 (레이어는 조건으로 쓰지 않음)
 ;;;   ZFCLR  : ZF가 그린 표시(ZF_CHECK 레이어 객체)를 모두 지움
+;;;   ZF1    : (2단계 시험) 1번 프레임만 PDF로 출력
 ;;;
 ;;; 사용 함수: 기본 AutoLISP 함수만 사용 (vl- / vla- / vlax- 함수 사용 안 함)
 ;;; 좌표: 배치탭(용지 공간) LWPOLYLINE의 DXF 10 좌표를 그대로 사용
@@ -223,43 +224,66 @@
                  (list 10 x y 0.0) (list 11 x y 0.0)
                  (cons 40 h) (cons 1 str) '(72 . 1) '(73 . 2))))
 
+;;; ---------- 공통: 실행 위치 확인 ----------
+;;; 문제 없으면 nil, 있으면 안내 문자열
+(defun zf-space-problem ()
+  (cond
+    ((= (getvar "TILEMODE") 1)
+     "지금은 모형 탭입니다. 배치탭으로 전환한 뒤 실행하세요.")
+    ((/= (getvar "CVPORT") 1)
+     "뷰포트 안(모형 공간)이 활성 상태입니다. 뷰포트 바깥을 더블클릭하거나 PSPACE 명령으로 전환한 뒤 실행하세요.")))
+
+;;; ---------- 공통: 견본 ㄱ자 선택 ----------
+;;; ㄱ자 폴리선이 아니면 다시 묻기, 빈 곳 클릭/Enter면 취소
+;;; 결과: (견본 색상) 또는 nil
+(defun zf-pick-sample (tag / pick ed r samp color)
+  (while (and (not samp)
+              (setq pick (entsel "\nㄱ자 표시 하나를 클릭하세요 (빈 곳/Enter = 취소): ")))
+    (setq ed (entget (car pick)))
+    (cond
+      ((/= (cdr (assoc 0 ed)) "LWPOLYLINE")
+       (princ (strcat "\n" tag " 선택한 객체 종류: " (cdr (assoc 0 ed))
+                      " (LWPOLYLINE 아님) - 다시 선택하세요.")))
+      ((= (type (setq r (zf-mark-shape ed *ZF-TOL-PT*))) 'STR)
+       (princ (strcat "\n" tag " ㄱ자 모양이 아닙니다(" r ") - 다시 선택하세요.")))
+      (t (setq samp  r
+               color (cdr (assoc 62 ed))))))
+  (if samp (list samp color)))
+
+;;; ---------- 공통: 프레임 찾기 + Z 정렬 ----------
+;;; 결과: (got corners ordered fails)
+;;;   got : zf-get-marks 결과 (선목록 후보수 탈락목록)
+(defun zf-detect (tab samp color / got hv corners built)
+  (setq got     (zf-get-marks tab samp color *ZF-TOL-PT*)
+        hv      (zf-split (car got) *ZF-TOL-PT*)
+        corners (zf-find-corners (car hv) (cadr hv) *ZF-TOL-PT*)
+        built   (zf-build-frames corners *ZF-TOL-PT*))
+  (list got corners (zf-zorder (car built) *ZF-TOL-ROW*) (cadr built)))
+
 ;;; ---------- 명령: ZF ----------
-(defun c:ZF (/ *error* t0 tab pick ed r samp color got lines hv corners built
-               frames fails ordered n h f)
+(defun c:ZF (/ *error* t0 tab prob ps samp color det got lines corners
+               fails ordered n h)
   (defun *error* (msg)
     (princ (strcat "\n[ZF] 오류: " msg))
     (princ))
   (cond
-    ((= (getvar "TILEMODE") 1)
-     (princ "\n[ZF] 지금은 모형 탭입니다. 배치탭으로 전환한 뒤 실행하세요."))
-    ((/= (getvar "CVPORT") 1)
-     (princ "\n[ZF] 뷰포트 안(모형 공간)이 활성 상태입니다. 뷰포트 바깥을 더블클릭하거나 PSPACE 명령으로 전환한 뒤 실행하세요."))
+    ((setq prob (zf-space-problem))
+     (princ (strcat "\n[ZF] " prob)))
     (t
-     (setq tab (getvar "CTAB"))
-     ;; 견본 ㄱ자 선택 (ㄱ자 폴리선이 아니면 다시 묻기, 빈 곳 클릭/Enter면 취소)
-     (while (and (not samp)
-                 (setq pick (entsel "\nㄱ자 표시 하나를 클릭하세요 (빈 곳/Enter = 취소): ")))
-       (setq ed (entget (car pick)))
-       (cond
-         ((/= (cdr (assoc 0 ed)) "LWPOLYLINE")
-          (princ (strcat "\n[ZF] 선택한 객체 종류: " (cdr (assoc 0 ed))
-                         " (LWPOLYLINE 아님) - 다시 선택하세요.")))
-         ((= (type (setq r (zf-mark-shape ed *ZF-TOL-PT*))) 'STR)
-          (princ (strcat "\n[ZF] ㄱ자 모양이 아닙니다(" r ") - 다시 선택하세요.")))
-         (t (setq samp  r
-                  color (cdr (assoc 62 ed))))))
-     (if (not samp)
+     (setq tab (getvar "CTAB")
+           ps  (zf-pick-sample "[ZF]"))
+     (if (not ps)
        (princ "\n[ZF] 선택 없음 - 취소했습니다.")
        (progn
-         (setq t0 (getvar "DATE"))
-         (setq got     (zf-get-marks tab samp color *ZF-TOL-PT*)
+         (setq samp  (car ps)
+               color (cadr ps)
+               t0    (getvar "DATE")
+               det     (zf-detect tab samp color)
+               got     (nth 0 det)
                lines   (car got)
-               hv      (zf-split lines *ZF-TOL-PT*)
-               corners (zf-find-corners (car hv) (cadr hv) *ZF-TOL-PT*)
-               built   (zf-build-frames corners *ZF-TOL-PT*)
-               frames  (car built)
-               fails   (cadr built)
-               ordered (zf-zorder frames *ZF-TOL-ROW*))
+               corners (nth 1 det)
+               ordered (nth 2 det)
+               fails   (nth 3 det))
          ;; 표시 그리기
          (zf-ensure-layer *ZF-MARK-LAYER*)
          (setq n 0)
@@ -300,6 +324,121 @@
          (princ "\n[ZF] 표시 지우기: ZFCLR")))))
   (princ))
 
+;;; ==================================================================
+;;; 2단계: PDF 출력
+;;; ==================================================================
+
+;;; ---------- 출력 설정값 ----------
+(setq *ZF-PLOTTER* "DWG To PDF.pc3")
+(setq *ZF-PAPER*   "ISO 전체 페이지 A3(420.00 x 297.00 mm)")
+
+;;; 파일 이름에서 마지막 "." 뒤(확장자) 떼기
+(defun zf-strip-ext (name / i dot)
+  (setq i 1)
+  (while (<= i (strlen name))
+    (if (= (substr name i 1) ".") (setq dot i))
+    (setq i (1+ i)))
+  (if dot (substr name 1 (1- dot)) name))
+
+;;; 출력 파일 경로: <도면 폴더>\<도면 이름>_<배치탭>_<번호 2자리>.pdf
+;;; 같은 이름 파일이 있으면 _2, _3 ... 을 붙여 덮어쓰지 않음
+(defun zf-out-path (tab no / base nn path k)
+  (setq base (strcat (getvar "DWGPREFIX") (zf-strip-ext (getvar "DWGNAME")) "_" tab "_")
+        nn   (if (< no 10) (strcat "0" (itoa no)) (itoa no))
+        path (strcat base nn ".pdf")
+        k    1)
+  (while (findfile path)
+    (setq k    (1+ k)
+          path (strcat base nn "_" (itoa k) ".pdf")))
+  path)
+
+;;; 바꿀 시스템 변수 저장 / 복원
+(defun zf-sv-save (names / r)
+  (foreach nm names (setq r (cons (cons nm (getvar nm)) r)))
+  r)
+(defun zf-sv-restore (saved)
+  (foreach p saved (if (cdr p) (setvar (car p) (cdr p)))))
+
+;;; 프레임 하나를 윈도우 범위로 PDF 출력. 질문 순서는 LT 2026 한글판 -PLOT 손 시험 기록 기준
+;;; 결과: T = 명령이 끝까지 진행됨, nil = 질문 순서가 맞지 않아 중간에 취소함
+(defun zf-plot-frame (f path)
+  (command "-PLOT"
+           "Y"                                   ; 상세한 플롯 구성
+           ""                                    ; 배치 이름 (현재 배치)
+           *ZF-PLOTTER*                          ; 출력 장치
+           *ZF-PAPER*                            ; 용지 크기
+           "M"                                   ; 용지 단위: 밀리미터
+           "L"                                   ; 용지 방향: 가로
+           "N"                                   ; 위아래 뒤집기: 아니오
+           "W"                                   ; 플롯 영역: 윈도우
+           (list (nth 0 f) (nth 1 f))            ;   왼쪽 아래
+           (list (nth 2 f) (nth 3 f))            ;   오른쪽 위
+           "F"                                   ; 축척: 맞춤
+           "C"                                   ; 간격띄우기: 중심
+           ""                                    ; 플롯 스타일로 플롯
+           ""                                    ; 플롯 스타일 테이블
+           ""                                    ; 선가중치로 플롯
+           ""                                    ; 선가중치를 축척에 적용
+           ""                                    ; 도면 공간 먼저 플롯
+           ""                                    ; 도면 공간 객체 숨기기
+           path                                  ; 파일 이름
+           "N"                                   ; 페이지 설정 변경 사항 저장
+           "Y")                                  ; 플롯 진행
+  (if (> (getvar "CMDACTIVE") 0)
+    (progn (command) nil)                        ; 아직 질문이 남음 -> 취소
+    T))
+
+(defun zf-now-ms (/ ms)
+  (if (setq ms (getvar "MILLISECS")) ms (* (getvar "DATE") 86400000.0)))
+
+;;; ---------- 명령: ZF1 (2단계 시험: 1번 프레임만 출력) ----------
+(defun c:ZF1 (/ *error* saved tab prob ps det ordered fails f path t0 ok)
+  (defun *error* (msg)
+    (if saved (zf-sv-restore saved))
+    (princ (strcat "\n[ZF1] 오류: " msg))
+    (princ))
+  (cond
+    ((setq prob (zf-space-problem))
+     (princ (strcat "\n[ZF1] " prob)))
+    (t
+     (setq tab (getvar "CTAB")
+           ps  (zf-pick-sample "[ZF1]"))
+     (if (not ps)
+       (princ "\n[ZF1] 선택 없음 - 취소했습니다.")
+       (progn
+         (setq det     (zf-detect tab (car ps) (cadr ps))
+               ordered (nth 2 det)
+               fails   (nth 3 det))
+         (princ (strcat "\n[ZF1] 프레임 " (itoa (length ordered)) "개, 실패 "
+                        (itoa (length fails)) "개"))
+         (if (not ordered)
+           (princ "\n[ZF1] 출력할 프레임이 없습니다.")
+           (progn
+             (setq f    (car ordered)
+                   path (zf-out-path tab 1))
+             (princ (strcat "\n[ZF1] 1번 출력: 왼쪽아래 " (zf-fmt (nth 0 f) (nth 1 f))
+                            "  오른쪽위 " (zf-fmt (nth 2 f) (nth 3 f))))
+             (princ (strcat "\n[ZF1] 파일: " path))
+             ;; 저장 창 끔, 객체 스냅 끔, 출력을 앞에서(끝날 때까지 기다림) 진행
+             (setq saved (zf-sv-save '("FILEDIA" "OSMODE" "BACKGROUNDPLOT")))
+             (setvar "FILEDIA" 0)
+             (setvar "OSMODE" 0)
+             (if (getvar "BACKGROUNDPLOT") (setvar "BACKGROUNDPLOT" 0))
+             (setq t0 (zf-now-ms)
+                   ok (zf-plot-frame f path))
+             (zf-sv-restore saved)
+             (setq saved nil)
+             (cond
+               ((not ok)
+                (princ "\n[ZF1] 실패: -PLOT 질문 순서가 예상과 달라 취소했습니다. F2 창 기록을 보내 주세요."))
+               ((findfile path)
+                (princ (strcat "\n[ZF1] 완료 (" (rtos (/ (- (zf-now-ms) t0) 1000.0) 2 2) "초): " path)))
+               (t
+                (princ "\n[ZF1] 명령은 끝났지만 PDF 파일을 찾지 못했습니다. F2 창 기록을 보내 주세요.")))))
+         (if fails
+           (princ "\n[ZF1] 실패한 프레임이 있습니다. ZF로 위치를 확인하세요."))))))
+  (princ))
+
 ;;; ---------- 명령: ZFCLR ----------
 (defun c:ZFCLR (/ ss i)
   (setq ss (ssget "X" (list (cons 8 *ZF-MARK-LAYER*))))
@@ -313,5 +452,5 @@
     (princ "\n[ZFCLR] 지울 표시 없음"))
   (princ))
 
-(princ "\n[zframe.lsp] 로드됨. 명령: ZF (프레임 찾기/번호 표시), ZFCLR (표시 지우기)")
+(princ "\n[zframe.lsp] 로드됨. 명령: ZF (프레임 찾기/번호 표시), ZFCLR (표시 지우기), ZF1 (1번 프레임 PDF 출력 시험)")
 (princ)

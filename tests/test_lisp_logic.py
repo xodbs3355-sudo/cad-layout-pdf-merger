@@ -107,3 +107,27 @@ def test_lisp_no_candidates_returns_empty():
     samp = dict(sample_of(ents), color=7)    # 색 7인 객체는 없음
     lf, lfails, cnt, rej = lisp_run(ents, samp)
     assert lf == [] and lfails == [] and cnt == 0 and rej == {}
+
+
+def test_zf_detect_matches_pipeline():
+    ents, origins = M.build(count=13, seed=1)
+    it = make_interp([to_ed(e) for e in ents])
+    samp_ed = to_ed(sample_of(ents))
+    samp = it.g[Sym("ZF-MARK-SHAPE")](samp_ed, 0.5)
+    det = it.g[Sym("ZF-DETECT")](TAB, samp, M.COLOR)
+    ordered, fails = det[2], det[3]
+    assert fails is None and len(ordered) == 13
+    for f, (x, y) in zip(ordered, origins):
+        assert abs(f[0] - x) < 0.5 and abs(f[1] - y) < 0.5
+
+
+def test_strip_ext_and_out_path():
+    it = make_interp([])
+    strip = it.g[Sym("ZF-STRIP-EXT")]
+    assert strip("a.b.dwg") == "a.b" and strip("noext") == "noext"
+    existing = {"C:\\d\\도면_배치1_01.pdf", "C:\\d\\도면_배치1_01_2.pdf"}
+    it.g[Sym("GETVAR")] = lambda n: {"DWGPREFIX": "C:\\d\\", "DWGNAME": "도면.dwg"}[n]
+    it.g[Sym("FINDFILE")] = lambda p: p if p in existing else None
+    out = it.g[Sym("ZF-OUT-PATH")]
+    assert out("배치1", 1) == "C:\\d\\도면_배치1_01_3.pdf"
+    assert out("배치1", 12) == "C:\\d\\도면_배치1_12.pdf"
